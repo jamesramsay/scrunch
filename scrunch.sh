@@ -68,22 +68,23 @@ function to_lossless_webp {
   $GM convert -format webp -define webp:lossless=true "$source_file" "$target_file" || return $?
 }
 
-for source_file in "$@"
-do
+function process_file {
+  declare -r source_file=${1:?"A source file must be specified."}
+
   target_file="$(dirname "$source_file")/$(date -r "$source_file" +"%Y-%m-%dT%H.%M.%S")"
 
   mime_type=$(file --brief --mime-type "$source_file")
   case "$mime_type" in
     image/png)
-      is_uncompressed_png "$source_file" || continue
+      is_uncompressed_png "$source_file" || return
 
       temp_target=$(mktemp)
       png_target=$target_file.png
       webp_target=$target_file.webp
 
-      quantize_png "$source_file" "$temp_target" || continue
+      quantize_png "$source_file" "$temp_target" || return
       to_lossless_webp "$temp_target" "$webp_target" || continue
-      deflate_png "$temp_target" "$png_target" || continue
+      deflate_png "$temp_target" "$png_target" || return
 
       rm "$temp_target"
       ;;
@@ -92,16 +93,16 @@ do
       jpeg_target=$target_file.jpg
       webp_target=$target_file.webp
 
-      heic_to_jpeg "$source_file" "$temp_target" || continue
-      auto_orient "$temp_target" "$jpeg_target" || continue
-      to_webp "$jpeg_target" "$webp_target" || continue
+      heic_to_jpeg "$source_file" "$temp_target" || return
+      auto_orient "$temp_target" "$jpeg_target" || return
+      to_webp "$jpeg_target" "$webp_target" || return
 
       rm "$temp_target"
       ;;
     video/quicktime)
       mov_to_mp4 "$source_file" "$target_file.mp4"
       ;;
-    *) continue ;;
+    *) return ;;
   esac
 
   if [ $? -eq 0 ]; then
@@ -110,4 +111,9 @@ do
     # Copy to clipboard (optional)
     # osascript -e "set the clipboard to (read (POSIX file \"$(perl -e "print glob('$new_file')")\") as {«class PNGf»})"
   fi
+}
+
+for source_file in "$@"
+do
+  process_file "$source_file"
 done
