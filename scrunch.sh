@@ -6,6 +6,77 @@ SIPS=/usr/bin/sips
 ZOPFLIPNG=/usr/local/bin/zopflipng
 
 PNG_MAX_COLORS=64
+CREATE_WEBP=0
+
+set -Eeuo pipefail
+trap cleanup SIGINT SIGTERM ERR EXIT
+
+usage() {
+  cat <<EOF
+Usage: $(basename "${BASH_SOURCE[0]}") [-h] [-v] [--webp] [--colors number] [files...]
+
+Simple wrapper for automatically processing screen shots, screen recordings,
+and photographs for sharing online.
+
+Available options:
+
+--webp          Create additional WebP image for PNG and JPEG input files
+-c, --colors    Quantize PNG color palette, default is 64
+-h, --help      Print this help and exit
+-v, --verbose   Print script debug info
+EOF
+  exit
+}
+
+cleanup() {
+  trap - SIGINT SIGTERM ERR EXIT
+  # script cleanup here
+}
+
+setup_colors() {
+  if [[ -t 2 ]] && [[ -z "${NO_COLOR-}" ]] && [[ "${TERM-}" != "dumb" ]]; then
+    NOFORMAT='\033[0m' RED='\033[0;31m' GREEN='\033[0;32m' ORANGE='\033[0;33m' BLUE='\033[0;34m' PURPLE='\033[0;35m' CYAN='\033[0;36m' YELLOW='\033[1;33m'
+  else
+    NOFORMAT='' RED='' GREEN='' ORANGE='' BLUE='' PURPLE='' CYAN='' YELLOW=''
+  fi
+}
+
+msg() {
+  echo >&2 -e "${1-}"
+}
+
+die() {
+  local msg=$1
+  local code=${2-1} # default exit status 1
+  msg "$msg"
+  exit "$code"
+}
+
+parse_params() {
+  while :; do
+    case "${1-}" in
+    -h | --help) usage ;;
+    -v | --verbose) set -x ;;
+    --no-color) NO_COLOR=1 ;;
+    --webp) CREATE_WEBP=1 ;;
+    -c | --colors)
+      PNG_MAX_COLORS="${2-}"
+      shift
+      ;;
+    -?*) die "Unknown option: $1" ;;
+    *) break ;;
+    esac
+    shift
+  done
+
+  args=("$@")
+
+  # check required params and arguments
+  # [[ -z "${param-}" ]] && die "Missing required parameter: param"
+  [[ ${#args[@]} -eq 0 ]] && die "Missing script arguments"
+
+  return 0
+}
 
 function is_uncompressed_png {
   declare -r source_file=${1:?"A source PNG file must be specified."}
@@ -28,7 +99,7 @@ function quantize_png {
 
   # Quantize to PNG-8 with 64 colors (lossy, fast)
   # Majority of filesize savings come from this
-  $PNGQUANT $PNG_MAX_COLORS --skip-if-larger --strip --force --output="$target_file" "$source_file" || return $?
+  $PNGQUANT "$PNG_MAX_COLORS" --skip-if-larger --strip --force --output="$target_file" "$source_file" || return $?
 }
 
 function deflate_png {
@@ -71,6 +142,11 @@ function to_lossless_webp {
 function process_file {
   declare -r source_file=${1:?"A source file must be specified."}
 
+  if ! [ -f "$source_file" ]; then
+    msg "${RED}ERROR: file '$source_file' does not exist"
+    return
+  fi
+
   target_file="$(dirname "$source_file")/$(date -r "$source_file" +"%Y-%m-%dT%H.%M.%S")"
 
   mime_type=$(file --brief --mime-type "$source_file")
@@ -83,7 +159,10 @@ function process_file {
       webp_target=$target_file.webp
 
       quantize_png "$source_file" "$temp_target" || return
-      to_lossless_webp "$temp_target" "$webp_target" || continue
+
+      # Optionally create a WebP version
+      [ $CREATE_WEBP -eq 0 ] || to_lossless_webp "$temp_target" "$webp_target" || return
+
       deflate_png "$temp_target" "$png_target" || return
 
       rm "$temp_target"
@@ -95,7 +174,9 @@ function process_file {
 
       heic_to_jpeg "$source_file" "$temp_target" || return
       auto_orient "$temp_target" "$jpeg_target" || return
-      to_webp "$jpeg_target" "$webp_target" || return
+
+      # Optionally create a WebP version
+      [ $CREATE_WEBP -eq 0 ] || to_webp "$jpeg_target" "$webp_target" || return
 
       rm "$temp_target"
       ;;
@@ -105,15 +186,21 @@ function process_file {
     *) return ;;
   esac
 
-  if [ $? -eq 0 ]; then
-    rm "$source_file"
+  rm "$source_file"
 
-    # Copy to clipboard (optional)
-    # osascript -e "set the clipboard to (read (POSIX file \"$(perl -e "print glob('$new_file')")\") as {«class PNGf»})"
-  fi
+  # Copy to clipboard (optional)
+  # osascript -e "set the clipboard to (read (POSIX file \"$(perl -e "print glob('$new_file')")\") as {«class PNGf»})"
 }
 
-for source_file in "$@"
-do
-  process_file "$source_file"
-done
+parse_params "$@"
+setup_colors
+
+if [ "${args[0]}" = "-" ]; then
+  while IFS='$\n' read -r source_file; do
+    process_file "$source_file"
+  done
+else
+  for source_file in "$@"; do
+    process_file "$source_file"
+  done
+fi
